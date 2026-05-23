@@ -1,0 +1,48 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:14
+    environment:
+      POSTGRES_USER: neotrace
+      POSTGRES_PASSWORD: securepassword
+      POSTGRES_DB: neotrace
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+  
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+  
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://neotrace:securepassword@postgres/neotrace
+      - REDIS_URL=redis://redis:6379
+      - ABUSEIPDB_KEY=${ABUSEIPDB_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./backend:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+  
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+
+volumes:
+  postgres_data:
+  redis_data:
