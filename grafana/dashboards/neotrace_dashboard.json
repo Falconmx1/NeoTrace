@@ -1,0 +1,102 @@
+{
+  "dashboard": {
+    "title": "NeoTrace - AI IP Tracker Monitor",
+    "description": "Monitoreo en tiempo real de análisis de IPs y detección de amenazas",
+    "tags": ["security", "ai", "network"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "title": "Análisis de IP por minuto",
+        "type": "graph",
+        "targets": [{
+          "expr": "rate(neotrace_analysis_requests_total[1m])",
+          "legendFormat": "{{ip_type}} - {{result_type}}"
+        }],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+      },
+      {
+        "title": "IPs Maliciosas Detectadas",
+        "type": "stat",
+        "targets": [{
+          "expr": "sum(neotrace_malicious_ips_total)",
+          "legendFormat": "Total"
+        }],
+        "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0}
+      },
+      {
+        "title": "Alertas Activas por Severidad",
+        "type": "piechart",
+        "targets": [{
+          "expr": "neotrace_active_alerts",
+          "legendFormat": "{{severity}}"
+        }],
+        "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0}
+      },
+      {
+        "title": "Latencia de Inferencia",
+        "type": "heatmap",
+        "targets": [{
+          "expr": "neotrace_inference_latency_seconds_bucket",
+          "format": "heatmap"
+        }],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+      },
+      {
+        "title": "Top 5 IPs Más Analizadas",
+        "type": "table",
+        "targets": [{
+          "expr": "topk(5, neotrace_analysis_requests_total)",
+          "format": "table"
+        }],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+      },
+      {
+        "title": "Uso de Recursos del Sistema",
+        "type": "graph",
+        "targets": [
+          {"expr": "neotrace_cpu_usage_percent", "legendFormat": "CPU"},
+          {"expr": "neotrace_memory_usage_bytes / 1024 / 1024 / 1024", "legendFormat": "Memory (GB)"}
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}
+      },
+      {
+        "title": "Mapa de Calor de IPs Maliciosas por País",
+        "type": "worldmap",
+        "targets": [{
+          "expr": "sum by (country) (neotrace_malicious_ips_total)",
+          "format": "table"
+        }],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}
+      },
+      {
+        "title": "Efectividad de Caché",
+        "type": "gauge",
+        "targets": [{
+          "expr": "neotrace_cache_hits_total / (neotrace_cache_hits_total + neotrace_cache_misses_total) * 100",
+          "legendFormat": "Hit Rate (%)"
+        }],
+        "gridPos": {"h": 8, "w": 6, "x": 0, "y": 24}
+      },
+      {
+        "title": "Confianza del Modelo por Clase",
+        "type": "bargauge",
+        "targets": [{
+          "expr": "neotrace_model_confidence",
+          "legendFormat": "{{class_type}}"
+        }],
+        "gridPos": {"h": 8, "w": 6, "x": 6, "y": 24}
+      },
+      {
+        "title": "Alertas Recientes",
+        "type": "logs",
+        "targets": [{
+          "expr": "{job=\"neotrace\"} |= \"ALERTA\"",
+          "refId": "A"
+        }],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24}
+      }
+    ],
+    "refresh": "10s",
+    "time": {"from": "now-1h", "to": "now"}
+  }
+}
