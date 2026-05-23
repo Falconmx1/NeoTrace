@@ -1,0 +1,39 @@
+groups:
+  - name: neotrace_alerts
+    interval: 30s
+    rules:
+      - alert: HighRateMaliciousIPs
+        expr: rate(neotrace_malicious_ips_total[5m]) > 10
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Alta tasa de IPs maliciosas detectadas"
+          description: "Se detectaron {{ $value }} IPs maliciosas por minuto"
+      
+      - alert: ModelConfidenceLow
+        expr: neotrace_model_confidence{class_type="malicioso"} < 0.7
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Confianza del modelo baja"
+          description: "El modelo está inseguro en clasificaciones maliciosas"
+      
+      - alert: CacheHitRateLow
+        expr: (neotrace_cache_hits_total / (neotrace_cache_hits_total + neotrace_cache_misses_total)) < 0.3
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Efectividad de caché baja"
+          description: "Menos del 30% de hits en caché"
+      
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, rate(neotrace_inference_latency_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Latencia alta en inferencias"
+          description: "El 95% de las inferencias tardan más de 2 segundos"
