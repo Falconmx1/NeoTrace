@@ -1,48 +1,443 @@
 version: '3.8'
+
 services:
+  # ============================================
+  # BASE DE DATOS POSTGRESQL
+  # ============================================
   postgres:
-    image: postgres:14
+    image: postgres:14-alpine
+    container_name: neotrace_postgres
     environment:
       POSTGRES_USER: neotrace
-      POSTGRES_PASSWORD: securepassword
+      POSTGRES_PASSWORD: NeoTrace2026Secure!
       POSTGRES_DB: neotrace
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.UTF-8"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
       - "5432:5432"
-  
+    networks:
+      - neotrace_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U neotrace -d neotrace"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================
+  # REDIS CACHE
+  # ============================================
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    container_name: neotrace_redis
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
-  
-  backend:
-    build: ./backend
     ports:
-      - "8000:8000"
+      - "6379:6379"
+    networks:
+      - neotrace_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ============================================
+  # BACKEND FASTAPI + IA
+  # ============================================
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: neotrace_backend
     environment:
-      - DATABASE_URL=postgresql://neotrace:securepassword@postgres/neotrace
+      - DATABASE_URL=postgresql://neotrace:NeoTrace2026Secure!@postgres:5432/neotrace
       - REDIS_URL=redis://redis:6379
-      - ABUSEIPDB_KEY=${ABUSEIPDB_KEY}
-      - GROQ_API_KEY=${GROQ_API_KEY}
-    depends_on:
-      - postgres
-      - redis
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - ABUSEIPDB_KEY=${ABUSEIPDB_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - ALERT_EMAIL=${ALERT_EMAIL:-}
+      - EMAIL_PASSWORD=${EMAIL_PASSWORD:-}
+      - ALERT_RECIPIENTS=${ALERT_RECIPIENTS:-}
+      - SMTP_SERVER=${SMTP_SERVER:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - PYTHONPATH=/app
+      - TZ=UTC
     volumes:
       - ./backend:/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-  
-  frontend:
-    build: ./frontend
+      - backend_models:/app/models
+      - backend_logs:/var/log/neotrace
     ports:
-      - "3000:3000"
+      - "8000:8000"
+    networks:
+      - neotrace_network
     depends_on:
-      - backend
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # ============================================
+  # FRONTEND REACT
+  # ============================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: neotrace_frontend
     environment:
       - REACT_APP_API_URL=http://localhost:8000
+      - REACT_APP_WS_URL=ws://localhost:8000
+      - REACT_APP_MAPBOX_TOKEN=${MAPBOX_TOKEN:-}
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    networks:
+      - neotrace_network
+    depends_on:
+      - backend
+    restart: unless-stopped
 
+  # ============================================
+  # PROMETHEUS - MÉTRICAS
+  # ============================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: neotrace_prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    ports:
+      - "9090:9090"
+    networks:
+      - neotrace_network
+    restart: unless-stopped
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================
+  # GRAFANA - DASHBOARDS
+  # ============================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: neotrace_grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=neotrace2026
+      - GF_INSTALL_PLUGINS=grafana-worldmap-panel,grafana-piechart-panel,grafana-clock-panel
+      - GF_SERVER_HTTP_PORT=3000
+      - GF_SERVER_ROOT_URL=http://localhost:3001
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_AUTH_BASIC_ENABLED=true
+    volumes:
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - grafana_data:/var/lib/grafana
+      - ./grafana/grafana.ini:/etc/grafana/grafana.ini:ro
+    ports:
+      - "3001:3000"
+    networks:
+      - neotrace_network
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================
+  # ALERTMANAGER
+  # ============================================
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: neotrace_alertmanager
+    volumes:
+      - ./alertmanager/config.yml:/etc/alertmanager/config.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/config.yml'
+      - '--storage.path=/alertmanager'
+      - '--web.external-url=http://localhost:9093'
+    ports:
+      - "9093:9093"
+    networks:
+      - neotrace_network
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+  # ============================================
+  # NGINX - REVERSE PROXY (OPCIONAL)
+  # ============================================
+  nginx:
+    image: nginx:alpine
+    container_name: neotrace_nginx
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - neotrace_network
+    depends_on:
+      - backend
+      - frontend
+      - grafana
+    restart: unless-stopped
+    profiles:
+      - production
+
+  # ============================================
+  # CADDY - AUTO HTTPS (ALTERNATIVA A NGINX)
+  # ============================================
+  caddy:
+    image: caddy:alpine
+    container_name: neotrace_caddy
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - neotrace_network
+    depends_on:
+      - backend
+      - frontend
+    restart: unless-stopped
+    profiles:
+      - production
+
+  # ============================================
+  # PGADMIN (OPCIONAL - ADMIN DB)
+  # ============================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: neotrace_pgadmin
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@neotrace.com
+      - PGADMIN_DEFAULT_PASSWORD=neotrace2026
+      - PGADMIN_CONFIG_SERVER_MODE=False
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "5050:80"
+    networks:
+      - neotrace_network
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    profiles:
+      - dev
+      - debug
+
+  # ============================================
+  # REDIS COMMANDER (OPCIONAL - ADMIN REDIS)
+  # ============================================
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: neotrace_redis_commander
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+      - HTTP_USER=admin
+      - HTTP_PASSWORD=neotrace2026
+    ports:
+      - "8081:8081"
+    networks:
+      - neotrace_network
+    depends_on:
+      - redis
+    restart: unless-stopped
+    profiles:
+      - dev
+      - debug
+
+  # ============================================
+  # CADVISOR - MONITOREO DE CONTENEDORES
+  # ============================================
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: neotrace_cadvisor
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      - "8080:8080"
+    networks:
+      - neotrace_network
+    restart: unless-stopped
+    privileged: true
+    profiles:
+      - monitoring
+
+  # ============================================
+  # NODE EXPORTER - MÉTRICAS DEL SISTEMA
+  # ============================================
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: neotrace_node_exporter
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    ports:
+      - "9100:9100"
+    networks:
+      - neotrace_network
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+  # ============================================
+  # LOGSTASH - AGREGACIÓN DE LOGS
+  # ============================================
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.10.0
+    container_name: neotrace_logstash
+    volumes:
+      - ./logstash/logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
+      - backend_logs:/var/log/neotrace:ro
+    ports:
+      - "5000:5000"
+    networks:
+      - neotrace_network
+    depends_on:
+      - backend
+    restart: unless-stopped
+    profiles:
+      - logging
+
+  # ============================================
+  # ELASTICSEARCH (SI QUIERES LOGS CENTRALIZADOS)
+  # ============================================
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.10.0
+    container_name: neotrace_elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks:
+      - neotrace_network
+    restart: unless-stopped
+    profiles:
+      - logging
+      - full
+
+  # ============================================
+  # KIBANA - VISUALIZACIÓN DE LOGS
+  # ============================================
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.10.0
+    container_name: neotrace_kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    networks:
+      - neotrace_network
+    depends_on:
+      - elasticsearch
+    restart: unless-stopped
+    profiles:
+      - logging
+      - full
+
+# ============================================
+# VOLUMES PERSISTENTES
+# ============================================
 volumes:
   postgres_data:
+    driver: local
+    name: neotrace_postgres_data
   redis_data:
+    driver: local
+    name: neotrace_redis_data
+  prometheus_data:
+    driver: local
+    name: neotrace_prometheus_data
+  grafana_data:
+    driver: local
+    name: neotrace_grafana_data
+  alertmanager_data:
+    driver: local
+    name: neotrace_alertmanager_data
+  backend_models:
+    driver: local
+    name: neotrace_backend_models
+  backend_logs:
+    driver: local
+    name: neotrace_backend_logs
+  caddy_data:
+    driver: local
+    name: neotrace_caddy_data
+  caddy_config:
+    driver: local
+    name: neotrace_caddy_config
+  pgadmin_data:
+    driver: local
+    name: neotrace_pgadmin_data
+  elasticsearch_data:
+    driver: local
+    name: neotrace_elasticsearch_data
+
+# ============================================
+# REDES
+# ============================================
+networks:
+  neotrace_network:
+    driver: bridge
+    name: neotrace_network
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1
